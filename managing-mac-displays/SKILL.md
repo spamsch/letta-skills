@@ -1,11 +1,13 @@
 ---
 name: managing-mac-displays
-description: Inspects, snapshots, disconnects, and restores physical Mac display layouts with displayplacer while preserving a known recovery path. Use when the user mentions external monitors, display layouts, Remote Desktop screen size, disconnecting or reconnecting screens, displayplacer, or a monitor missing after software disable.
+description: Inspects, snapshots, parks (mirror-hides), unparks, disconnects, and restores physical Mac display layouts with displayplacer while preserving a known recovery path. Use when the user mentions external monitors, display layouts, Remote Desktop screen size, temporarily setting a screen aside, disconnecting or reconnecting screens, displayplacer, or a monitor missing after software disable.
 ---
 
 # Managing Mac displays
 
-Use `scripts/mac_displays.py` for every status check, profile, disconnect, and restore. Use only `displayplacer` and native macOS inspection. **Never launch, query, or invoke BetterDisplay.** BetterDisplay must not be running during disconnect or restore; the helper refuses mutations when it detects that process.
+Use `scripts/mac_displays.py` for every status check, profile, park, unpark, disconnect, and restore. Use only `displayplacer` and native macOS inspection. **Never launch, query, or invoke BetterDisplay.** BetterDisplay must not be running during any mutation; the helper refuses mutations when it detects that process.
+
+To temporarily set a screen aside and get it back reliably, use `park`/`unpark`, not `disconnect`. Reach for `disconnect` only when the display must genuinely leave the device tree, and understand that reversing it needs a physical hotplug, logout, or reboot.
 
 ## Read-only status
 
@@ -25,9 +27,32 @@ python3 scripts/mac_displays.py snapshot --output /tmp/display-profile.json
 
 Profiles contain displayplacer arguments, not shell source. Never overwrite an existing profile.
 
-## Disconnect safety boundary
+## Park and unpark (the default way to set a screen aside)
 
-On Apple Silicon, `displayplacer enabled:false` can remove a physical screen from the macOS device tree. The same command cannot then re-enable it because the display ID is no longer visible. Reconnecting the same cable/port may also fail.
+Parking mirrors the target external onto the built-in panel instead of disabling it. The display stays enabled and stays in the device tree, so its ID never disappears and `unpark` can bring it back in software—no cable move, logout, or reboot. This is the reversible path; prefer it whenever the user just wants a screen out of the way for a while.
+
+Snapshot the current independent layout first (this profile is also the unpark target):
+
+```bash
+python3 scripts/mac_displays.py snapshot --output /tmp/display-profile.json
+python3 scripts/mac_displays.py park \
+  --id DISPLAY-PERSISTENT-ID \
+  --profile /tmp/display-profile.json
+```
+
+`park` refuses unless the target is an enabled physical external screen, an enabled built-in panel remains to mirror onto, and the current layout still matches the profile. Parking does not switch the panel off—it shows a copy of the built-in. If the user wants the glass dark too, they turn the monitor off at its own power button or run `pmset displaysleepnow` (which sleeps every display until input).
+
+Unpark re-applies the saved profile, splitting the mirror set back into independent screens:
+
+```bash
+python3 scripts/mac_displays.py unpark --profile /tmp/display-profile.json
+```
+
+Because a parked display never left the device tree, `unpark` (like `restore`) validates against the same profile and succeeds without any physical step.
+
+## Disconnect (last resort—not reversible in software)
+
+On Apple Silicon, `displayplacer enabled:false` can remove a physical screen from the macOS device tree. The same command cannot then re-enable it because the display ID is no longer visible. Reconnecting the same cable/port may also fail. Use `park` instead unless the display must actually leave the device tree.
 
 Before disconnecting:
 

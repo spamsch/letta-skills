@@ -450,6 +450,100 @@ def wait_restore(profile_path: Path, timeout: int, poll: int) -> tuple[dict[str,
     }, 3
 
 
+def park(target_id: str, profile_path: Path) -> tuple[dict[str, Any], int]:
+    require_betterdisplay_stopped()
+    profile = load_profile(profile_path)
+    if profile["host"] != os.uname().nodename:
+        raise DisplayError("Profile belongs to another Mac.", 3)
+    view = status()
+    require_exact_profile_topology(profile, view["displays"])
+    remap_arguments(profile, view["displays"])
+    saved_ids = {str(item.get("persistent_id")) for item in profile["displays"]}
+    if target_id not in saved_ids:
+        raise DisplayError("The supplied profile does not contain the target display.", 3)
+
+    by_persistent, _ = display_map(view["displays"])
+    target = by_persistent.get(target_id)
+    if target is None:
+        raise DisplayError(f"Target display is not currently visible: {target_id}", 3)
+    if not is_external_physical(target):
+        raise DisplayError("Target must be an explicitly enabled physical external screen.", 3)
+    anchor = next((item for item in view["displays"] if is_builtin_physical(item)), None)
+    if anchor is None:
+        raise DisplayError("Refusing to park unless an enabled built-in display remains to mirror onto.", 3)
+    anchor_id = str(anchor["persistent_id"])
+    if anchor_id == target_id:
+        raise DisplayError("Target is the built-in display; refusing to park it.", 3)
+
+    result = run_displayplacer("list")
+    if result.returncode != 0:
+        raise DisplayError(f"displayplacer list failed: {result.stderr.strip() or result.stdout.strip()}", 3)
+    _, live_arguments = parse_list(result.stdout)
+    if not live_arguments:
+        raise DisplayError("Could not read the current displayplacer layout.", 3)
+
+    parked_arguments: list[str] = []
+    dropped_target = False
+    anchor_index = -1
+    for argument in live_arguments:
+        group = argument_id(argument).split("+")
+        if target_id in group:
+            if len(group) > 1:
+                raise DisplayError("Target already belongs to a mirror set; it appears parked.", 3)
+            dropped_target = True
+            continue
+        if anchor_id in group:
+            anchor_index = len(parked_arguments)
+            parked_arguments.append(replace_argument_id(argument, "+".join(group + [target_id])))
+        else:
+            parked_arguments.append(argument)
+    if not dropped_target:
+        raise DisplayError(f"Target display has no standalone layout entry: {target_id}", 3)
+    if anchor_index < 0:
+        raise DisplayError(f"Built-in display has no layout entry to mirror onto: {anchor_id}", 3)
+    # displayplacer needs exactly one screen at origin (0,0). If the target was the
+    # primary, folding it away leaves none—make the built-in mirror group primary.
+    if not any(re.search(r"origin:\(0,0\)", argument) for argument in parked_arguments):
+        parked_arguments[anchor_index] = re.sub(
+            r"origin:\([^)]*\)", "origin:(0,0)", parked_arguments[anchor_index]
+        )
+
+    require_betterdisplay_stopped()
+    applied = run_displayplacer(*parked_arguments)
+    time.sleep(3)
+    after = status()
+    after_ids = {str(item.get("persistent_id")) for item in after["displays"]}
+    if applied.returncode != 0:
+        return {
+            "success": False,
+            "error": applied.stderr.strip() or applied.stdout.strip() or "displayplacer refused the mirror layout.",
+            "profile": str(profile_path),
+            "current_displays": after["displays"],
+        }, 4
+    if target_id not in after_ids:
+        return {
+            "success": False,
+            "error": "Target left the device tree after parking; mirroring should never remove it. Treat as a disconnect and recover physically.",
+            "profile": str(profile_path),
+            "current_displays": after["displays"],
+        }, 4
+    return {
+        "success": True,
+        "parked": target,
+        "mirrored_onto": anchor_id,
+        "profile": str(profile_path),
+        "note": "Display is mirrored onto the built-in, not disconnected. It stays in the device tree, so 'unpark' can restore it in software.",
+        "current_displays": after["displays"],
+    }, 0
+
+
+def unpark(profile_path: Path) -> tuple[dict[str, Any], int]:
+    result, code = restore(profile_path)
+    if code == 0 and result.get("success"):
+        result["note"] = "Un-mirrored: restored the independent layout saved in the profile."
+    return result, code
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description="Safely manage physical Mac displays with displayplacer")
     sub = root.add_subparsers(dest="command", required=True)
@@ -462,6 +556,11 @@ def parser() -> argparse.ArgumentParser:
     disconnect_cmd.add_argument("--confirm", required=True)
     restore_cmd = sub.add_parser("restore")
     restore_cmd.add_argument("--profile", required=True)
+    park_cmd = sub.add_parser("park")
+    park_cmd.add_argument("--id", required=True)
+    park_cmd.add_argument("--profile", required=True)
+    unpark_cmd = sub.add_parser("unpark")
+    unpark_cmd.add_argument("--profile", required=True)
     wait_cmd = sub.add_parser("wait-restore")
     wait_cmd.add_argument("--profile", required=True)
     wait_cmd.add_argument("--timeout", type=int, default=180)
@@ -482,6 +581,10 @@ def main() -> int:
             result, code = disconnect(args.id, Path(args.profile).expanduser().absolute(), args.confirm)
         elif args.command == "restore":
             result, code = restore(Path(args.profile).expanduser().absolute())
+        elif args.command == "park":
+            result, code = park(args.id, Path(args.profile).expanduser().absolute())
+        elif args.command == "unpark":
+            result, code = unpark(Path(args.profile).expanduser().absolute())
         else:
             if not 10 <= args.timeout <= 3600 or not 1 <= args.poll <= 30:
                 raise DisplayError("timeout must be 10..3600 seconds and poll must be 1..30 seconds.")
