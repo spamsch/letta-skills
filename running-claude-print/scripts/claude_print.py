@@ -16,9 +16,8 @@ from pathlib import Path
 from typing import Any
 
 MAX_PROMPT_BYTES = 128 * 1024
-DEFAULT_TIMEOUT = 120
-DEFAULT_TURNS = 3
-DEFAULT_BUDGET = "0.50"
+DEFAULT_TIMEOUT = 600
+DEFAULT_TURNS = 50
 DEFAULT_OUTPUT_BYTES = 1024 * 1024
 READ_ONLY_TOOLS = "Read,Glob,Grep"
 SYSTEM_BOUNDARY = (
@@ -53,16 +52,6 @@ def bounded_int(value: str, minimum: int, maximum: int, label: str) -> int:
     if not minimum <= number <= maximum:
         raise argparse.ArgumentTypeError(f"{label} must be between {minimum} and {maximum}")
     return number
-
-
-def bounded_budget(value: str) -> str:
-    try:
-        number = float(value)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError("budget must be numeric") from exc
-    if not 0.01 <= number <= 5:
-        raise argparse.ArgumentTypeError("budget must be between 0.01 and 5.00 USD")
-    return f"{number:.2f}"
 
 
 def path_is_within(path: Path, parent: Path) -> bool:
@@ -109,14 +98,13 @@ def child_env() -> dict[str, str]:
     return os.environ.copy()
 
 
-def argv_for(mode: str, add_dirs: list[Path], turns: int, budget: str) -> list[str]:
+def argv_for(mode: str, add_dirs: list[Path], turns: int) -> list[str]:
     argv = [
         claude_binary(),
         "--print",
         "--no-session-persistence",
         "--output-format", "json",
         "--max-turns", str(turns),
-        "--max-budget-usd", budget,
     ]
     if mode == "read-only":
         argv.extend([
@@ -251,7 +239,7 @@ def analyze(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     cwd = safe_cwd(args.cwd, args.mode)
     add_dirs = additional_directories(args.add_dir, args.mode)
     prompt = read_prompt(args.prompt_file)
-    argv = argv_for(args.mode, add_dirs, args.max_turns, args.max_budget_usd)
+    argv = argv_for(args.mode, add_dirs, args.max_turns)
     sanitized = ["claude", *argv[1:-1], "-p", "<prompt via stdin>"]
     if args.dry_run:
         return {
@@ -262,7 +250,7 @@ def analyze(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "add_directories": [str(path) for path in add_dirs],
             "argv": sanitized,
             "prompt_bytes": len(prompt.encode("utf-8")),
-            "limits": {"timeout_seconds": args.timeout, "max_turns": args.max_turns, "max_budget_usd": args.max_budget_usd, "output_bytes": args.max_output_bytes},
+            "limits": {"timeout_seconds": args.timeout, "max_turns": args.max_turns, "output_bytes": args.max_output_bytes},
         }, 0
 
     started = time.monotonic()
@@ -327,8 +315,7 @@ def parser() -> argparse.ArgumentParser:
     analyze_cmd.add_argument("--prompt-file", required=True)
     analyze_cmd.add_argument("--confirm", help="Deprecated and ignored; unrestricted mode no longer requires a token.")
     analyze_cmd.add_argument("--timeout", type=lambda value: bounded_int(value, 10, 600, "timeout"), default=DEFAULT_TIMEOUT)
-    analyze_cmd.add_argument("--max-turns", type=lambda value: bounded_int(value, 1, 10, "max turns"), default=DEFAULT_TURNS)
-    analyze_cmd.add_argument("--max-budget-usd", type=bounded_budget, default=DEFAULT_BUDGET)
+    analyze_cmd.add_argument("--max-turns", type=lambda value: bounded_int(value, 1, 50, "max turns"), default=DEFAULT_TURNS)
     analyze_cmd.add_argument("--max-output-bytes", type=lambda value: bounded_int(value, 1024, 4 * 1024 * 1024, "output limit"), default=DEFAULT_OUTPUT_BYTES)
     analyze_cmd.add_argument("--dry-run", action="store_true")
     return root
