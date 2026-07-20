@@ -158,6 +158,66 @@ def terminate_group(process: subprocess.Popen[bytes]) -> None:
         process.wait()
 
 
+def tool_detail(tool_input: Any) -> str:
+    if not isinstance(tool_input, dict):
+        return ""
+    for key in ("command", "file_path", "path", "pattern", "url", "query"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            snippet = value.strip().splitlines()[0]
+            if len(snippet) > 80:
+                snippet = snippet[:77] + "..."
+            return f": {snippet}"
+    return ""
+
+
+def render_event(event: dict[str, Any]) -> str | None:
+    """Turn a stream-json event into a human line, or None to skip it."""
+    if event.get("type") != "assistant":
+        return None
+    message = event.get("message")
+    if not isinstance(message, dict):
+        return None
+    lines: list[str] = []
+    for block in message.get("content") or []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text":
+            text = block.get("text")
+            if isinstance(text, str) and text.strip():
+                lines.append(text.rstrip())
+        elif block.get("type") == "tool_use":
+            name = block.get("name") or "tool"
+            lines.append(f"→ {name}{tool_detail(block.get('input'))}")
+    return "\n".join(lines) if lines else None
+
+
+def drain_events(buffer: bytearray, flush_remainder: bool = False) -> None:
+    """Render complete newline-delimited events from buffer live to stderr."""
+    def render_line(raw: bytes) -> None:
+        text = raw.strip()
+        if not text:
+            return
+        try:
+            event = json.loads(text)
+        except json.JSONDecodeError:
+            return
+        if isinstance(event, dict):
+            message = render_event(event)
+            if message:
+                sys.stderr.write(message + "\n")
+                sys.stderr.flush()
+
+    while (newline := buffer.find(b"\n")) != -1:
+        line = bytes(buffer[:newline])
+        del buffer[:newline + 1]
+        render_line(line)
+    if flush_remainder and buffer:
+        line = bytes(buffer)
+        del buffer[:]
+        render_line(line)
+
+
 def run_bounded(argv: list[str], cwd: Path, prompt: str, timeout: int, output_limit: int, stream: bool) -> tuple[bytes, bytes, int, str | None]:
     process = subprocess.Popen(
         argv,
@@ -175,6 +235,7 @@ def run_bounded(argv: list[str], cwd: Path, prompt: str, timeout: int, output_li
     selector.register(process.stdout, selectors.EVENT_READ, "stdout")
     selector.register(process.stderr, selectors.EVENT_READ, "stderr")
     output = {"stdout": bytearray(), "stderr": bytearray()}
+    render_buffer = bytearray()
     deadline = time.monotonic() + timeout
     reason: str | None = None
     try:
@@ -194,11 +255,11 @@ def run_bounded(argv: list[str], cwd: Path, prompt: str, timeout: int, output_li
                 over = len(chunk) > room
                 accepted = chunk[:max(0, room)] if over else chunk
                 output[key.data].extend(accepted)
-                # Live-forward Claude's stdout events to our stderr so the caller
-                # sees progress; the wrapper's own stdout stays the final JSON result.
+                # Render Claude's stdout events into human messages live on our
+                # stderr; the wrapper's own stdout stays the final JSON result.
                 if stream and key.data == "stdout" and accepted:
-                    sys.stderr.buffer.write(accepted)
-                    sys.stderr.buffer.flush()
+                    render_buffer.extend(accepted)
+                    drain_events(render_buffer)
                 if over:
                     reason = "output_limit"
                     terminate_group(process)
@@ -209,6 +270,8 @@ def run_bounded(argv: list[str], cwd: Path, prompt: str, timeout: int, output_li
         selector.close()
         if process.poll() is None:
             terminate_group(process)
+        if stream:
+            drain_events(render_buffer, flush_remainder=True)
     return bytes(output["stdout"]), bytes(output["stderr"]), process.returncode or 0, reason
 
 
