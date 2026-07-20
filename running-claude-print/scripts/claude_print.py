@@ -98,14 +98,17 @@ def child_env() -> dict[str, str]:
     return os.environ.copy()
 
 
-def argv_for(mode: str, add_dirs: list[Path], turns: int) -> list[str]:
+def argv_for(mode: str, add_dirs: list[Path], turns: int, stream: bool) -> list[str]:
     argv = [
         claude_binary(),
         "--print",
         "--no-session-persistence",
-        "--output-format", "json",
+        "--output-format", "stream-json" if stream else "json",
         "--max-turns", str(turns),
     ]
+    if stream:
+        # stream-json emits newline-delimited events; Claude requires --verbose for it.
+        argv.append("--verbose")
     if mode == "read-only":
         argv.extend([
             "--bare",
@@ -155,7 +158,7 @@ def terminate_group(process: subprocess.Popen[bytes]) -> None:
         process.wait()
 
 
-def run_bounded(argv: list[str], cwd: Path, prompt: str, timeout: int, output_limit: int) -> tuple[bytes, bytes, int, str | None]:
+def run_bounded(argv: list[str], cwd: Path, prompt: str, timeout: int, output_limit: int, stream: bool) -> tuple[bytes, bytes, int, str | None]:
     process = subprocess.Popen(
         argv,
         cwd=cwd,
@@ -188,12 +191,18 @@ def run_bounded(argv: list[str], cwd: Path, prompt: str, timeout: int, output_li
                     continue
                 total = len(output["stdout"]) + len(output["stderr"])
                 room = output_limit - total
-                if len(chunk) > room:
-                    output[key.data].extend(chunk[:max(0, room)])
+                over = len(chunk) > room
+                accepted = chunk[:max(0, room)] if over else chunk
+                output[key.data].extend(accepted)
+                # Live-forward Claude's stdout events to our stderr so the caller
+                # sees progress; the wrapper's own stdout stays the final JSON result.
+                if stream and key.data == "stdout" and accepted:
+                    sys.stderr.buffer.write(accepted)
+                    sys.stderr.buffer.flush()
+                if over:
                     reason = "output_limit"
                     terminate_group(process)
                     break
-                output[key.data].extend(chunk)
             if reason:
                 break
     finally:
@@ -239,7 +248,7 @@ def analyze(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     cwd = safe_cwd(args.cwd, args.mode)
     add_dirs = additional_directories(args.add_dir, args.mode)
     prompt = read_prompt(args.prompt_file)
-    argv = argv_for(args.mode, add_dirs, args.max_turns)
+    argv = argv_for(args.mode, add_dirs, args.max_turns, args.stream)
     sanitized = ["claude", *argv[1:-1], "-p", "<prompt via stdin>"]
     if args.dry_run:
         return {
@@ -247,6 +256,7 @@ def analyze(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "dry_run": True,
             "cwd": str(cwd),
             "mode": args.mode,
+            "stream": args.stream,
             "add_directories": [str(path) for path in add_dirs],
             "argv": sanitized,
             "prompt_bytes": len(prompt.encode("utf-8")),
@@ -254,29 +264,53 @@ def analyze(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         }, 0
 
     started = time.monotonic()
-    stdout, stderr, code, reason = run_bounded(argv, cwd, prompt, args.timeout, args.max_output_bytes)
+    stdout, stderr, code, reason = run_bounded(argv, cwd, prompt, args.timeout, args.max_output_bytes, args.stream)
     duration = round(time.monotonic() - started, 3)
     stdout_text, stderr_text = decode_limited(stdout), decode_limited(stderr)
     if reason:
         return {"success": False, "error": reason, "exit_code": code, "duration_seconds": duration, "stderr": stderr_text}, 4
-    try:
-        payload = json.loads(stdout_text)
-    except json.JSONDecodeError:
-        return {"success": False, "error": "Claude did not return valid JSON.", "exit_code": code, "duration_seconds": duration, "stdout": stdout_text, "stderr": stderr_text}, 4
     events: list[dict[str, Any]] | None = None
-    if isinstance(payload, list) and all(isinstance(event, dict) for event in payload):
-        events = payload
+    if args.stream:
+        events = []
+        for line in stdout_text.splitlines():
+            candidate = line.strip()
+            if not candidate:
+                continue
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue  # tolerate any non-JSON progress lines
+            if isinstance(parsed, dict):
+                events.append(parsed)
         results = [event for event in events if event.get("type") == "result"]
         if len(results) != 1:
             return {
                 "success": False,
-                "error": "Claude event array has no unique terminal result.",
+                "error": "Claude stream had no unique terminal result.",
                 "exit_code": code,
                 "duration_seconds": duration,
                 "event_count": len(events),
                 "stderr": stderr_text,
             }, 4
-        payload = results[0]
+        payload: Any = results[0]
+    else:
+        try:
+            payload = json.loads(stdout_text)
+        except json.JSONDecodeError:
+            return {"success": False, "error": "Claude did not return valid JSON.", "exit_code": code, "duration_seconds": duration, "stdout": stdout_text, "stderr": stderr_text}, 4
+        if isinstance(payload, list) and all(isinstance(event, dict) for event in payload):
+            events = payload
+            results = [event for event in events if event.get("type") == "result"]
+            if len(results) != 1:
+                return {
+                    "success": False,
+                    "error": "Claude event array has no unique terminal result.",
+                    "exit_code": code,
+                    "duration_seconds": duration,
+                    "event_count": len(events),
+                    "stderr": stderr_text,
+                }, 4
+            payload = results[0]
     if not isinstance(payload, dict):
         return {
             "success": False,
@@ -317,6 +351,7 @@ def parser() -> argparse.ArgumentParser:
     analyze_cmd.add_argument("--timeout", type=lambda value: bounded_int(value, 10, 600, "timeout"), default=DEFAULT_TIMEOUT)
     analyze_cmd.add_argument("--max-turns", type=lambda value: bounded_int(value, 1, 50, "max turns"), default=DEFAULT_TURNS)
     analyze_cmd.add_argument("--max-output-bytes", type=lambda value: bounded_int(value, 1024, 4 * 1024 * 1024, "output limit"), default=DEFAULT_OUTPUT_BYTES)
+    analyze_cmd.add_argument("--stream", action=argparse.BooleanOptionalAction, default=True, help="Stream Claude events live to stderr (default). Use --no-stream for a single buffered JSON result.")
     analyze_cmd.add_argument("--dry-run", action="store_true")
     return root
 

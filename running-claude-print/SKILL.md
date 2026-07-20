@@ -39,7 +39,9 @@ python3 scripts/claude_print.py analyze \
   --prompt-file /tmp/claude-task.txt
 ```
 
-The output is a JSON object containing the final Claude result, session metadata, duration, and bounded stderr. Read the result before relying on it.
+By default the run **streams**: Claude's events are forwarded live to stderr as they happen, so a long unrestricted run shows progress instead of sitting silent. The wrapper's own stdout stays a single JSON object—the final Claude result, session metadata, duration, and bounded stderr—so anything parsing stdout is unaffected. Read that result before relying on it.
+
+Pass `--no-stream` for a fully buffered run that prints nothing until it finishes and returns one JSON object (the pre-streaming behavior).
 
 ## Read-only run (opt-in)
 
@@ -70,4 +72,5 @@ python3 scripts/claude_print.py analyze \
 - Unrestricted mode (the default) rejects only `/` and otherwise follows the explicit cwd and `--add-dir` list. Read-only mode additionally rejects the home directory itself, agent memory, and every descendant of agent memory.
 - Keep the default limits unless the task justifies changing them: 50 turns (max 50), no budget cap, 600 seconds, and 1 MiB combined output. There is no cost ceiling—an unrestricted run can spend freely until it finishes, hits 50 turns, or times out at 600 seconds.
 - Never pass a user-controlled shell string. The wrapper has no session-resume flag. Unrestricted mode applies `--dangerously-skip-permissions`; pass `--mode read-only` when Claude must not run commands or edit files. `--confirm` is accepted but ignored (kept for backward compatibility).
+- Streaming is on by default: live events go to stderr, the final result object to stdout. Byte and time caps still apply to the stream. Use `--no-stream` when a caller needs a single silent JSON emission.
 - Do not pass secrets in the prompt. Authentication stays with Claude Code’s existing login.
