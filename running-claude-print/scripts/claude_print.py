@@ -192,9 +192,37 @@ def render_event(event: dict[str, Any]) -> str | None:
     return "\n".join(lines) if lines else None
 
 
-def drain_events(buffer: bytearray, flush_remainder: bool = False) -> None:
-    """Render complete newline-delimited events from buffer live to stderr."""
-    def render_line(raw: bytes) -> None:
+class StreamRenderer:
+    """Render newline-delimited stream events to stderr as human messages.
+
+    Intermediate assistant text and tool markers stream live. The terminal
+    assistant message (the answer, which is repeated in the result event) is
+    held back with a defer-by-one buffer and dropped once the result arrives,
+    so the final answer is delivered only in the stdout JSON result.
+    """
+
+    def __init__(self) -> None:
+        self.buffer = bytearray()
+        self.held: str | None = None
+        self.result_seen = False
+
+    def _emit(self, message: str) -> None:
+        sys.stderr.write(message + "\n")
+        sys.stderr.flush()
+
+    def _handle(self, event: dict[str, Any]) -> None:
+        if event.get("type") == "result":
+            self.result_seen = True
+            self.held = None  # the message still held is the final answer; drop it
+            return
+        message = render_event(event)
+        if message is None:
+            return
+        if self.held is not None:
+            self._emit(self.held)  # a later message arrived, so the held one was not terminal
+        self.held = message
+
+    def _process(self, raw: bytes) -> None:
         text = raw.strip()
         if not text:
             return
@@ -203,19 +231,25 @@ def drain_events(buffer: bytearray, flush_remainder: bool = False) -> None:
         except json.JSONDecodeError:
             return
         if isinstance(event, dict):
-            message = render_event(event)
-            if message:
-                sys.stderr.write(message + "\n")
-                sys.stderr.flush()
+            self._handle(event)
 
-    while (newline := buffer.find(b"\n")) != -1:
-        line = bytes(buffer[:newline])
-        del buffer[:newline + 1]
-        render_line(line)
-    if flush_remainder and buffer:
-        line = bytes(buffer)
-        del buffer[:]
-        render_line(line)
+    def feed(self, chunk: bytes) -> None:
+        self.buffer.extend(chunk)
+        while (newline := self.buffer.find(b"\n")) != -1:
+            line = bytes(self.buffer[:newline])
+            del self.buffer[:newline + 1]
+            self._process(line)
+
+    def finish(self) -> None:
+        if self.buffer:
+            line = bytes(self.buffer)
+            del self.buffer[:]
+            self._process(line)
+        # If the run ended without a result event (timeout/kill), don't swallow
+        # the last message we were holding.
+        if self.held is not None and not self.result_seen:
+            self._emit(self.held)
+            self.held = None
 
 
 def run_bounded(argv: list[str], cwd: Path, prompt: str, timeout: int, output_limit: int, stream: bool) -> tuple[bytes, bytes, int, str | None]:
@@ -235,7 +269,7 @@ def run_bounded(argv: list[str], cwd: Path, prompt: str, timeout: int, output_li
     selector.register(process.stdout, selectors.EVENT_READ, "stdout")
     selector.register(process.stderr, selectors.EVENT_READ, "stderr")
     output = {"stdout": bytearray(), "stderr": bytearray()}
-    render_buffer = bytearray()
+    renderer = StreamRenderer() if stream else None
     deadline = time.monotonic() + timeout
     reason: str | None = None
     try:
@@ -257,9 +291,8 @@ def run_bounded(argv: list[str], cwd: Path, prompt: str, timeout: int, output_li
                 output[key.data].extend(accepted)
                 # Render Claude's stdout events into human messages live on our
                 # stderr; the wrapper's own stdout stays the final JSON result.
-                if stream and key.data == "stdout" and accepted:
-                    render_buffer.extend(accepted)
-                    drain_events(render_buffer)
+                if renderer is not None and key.data == "stdout" and accepted:
+                    renderer.feed(accepted)
                 if over:
                     reason = "output_limit"
                     terminate_group(process)
@@ -270,8 +303,8 @@ def run_bounded(argv: list[str], cwd: Path, prompt: str, timeout: int, output_li
         selector.close()
         if process.poll() is None:
             terminate_group(process)
-        if stream:
-            drain_events(render_buffer, flush_remainder=True)
+        if renderer is not None:
+            renderer.finish()
     return bytes(output["stdout"]), bytes(output["stderr"]), process.returncode or 0, reason
 
 
