@@ -19,6 +19,29 @@ BRIDGE="$HOME/Applications/Letta Privacy Bridge.app/Contents/MacOS/letta-privacy
 Every command prints exactly one JSON object on stdout; stderr is diagnostics only. Exit
 code is 0 when `"ok": true`. Branch on `error.code`, never on message text.
 
+## Always the same binary
+
+Call `$BRIDGE` for everything. Never work around it with `osascript`, `swift -e`, or a
+second copy of the executable.
+
+Commands that touch Calendar, Reminders, or Apple Events — `status`, `calendar`,
+`reminders`, `notes`, `mail`, `automation`, `request` — are transparently hosted by the
+installed app: the CLI relaunches the bundle through LaunchServices, the app runs the
+command as its own TCC-responsible process, and its JSON comes straight back on stdout
+with the same exit code. Reads do not activate the app or steal focus; only permission
+dialogs come forward. Adds roughly 0.2s.
+
+This matters because TCC authorizes the *responsible process*, not the binary. Running the
+executable directly from a shell makes the terminal responsible, so it reports the
+terminal's grants — which is why a successful `request calendar` used to be followed by
+`calendar events` seeing `not_determined`. Hosting removes that split; the caller does
+nothing differently.
+
+`help`, `version`, `fda status`, `fda open-settings`, and `open-settings` stay direct —
+they read nothing protected. If a hosted command reports `host_timeout`, the app never
+answered: check for an open system dialog, then retry, optionally with a larger
+`--timeout`.
+
 ## Check first
 
 ```bash
@@ -61,8 +84,8 @@ between Intel and Apple Silicon.
 "$BRIDGE" open-settings calendars           # reminders | automation | full-disk-access | privacy
 ```
 
-`request` relaunches the installed bundle through LaunchServices so macOS attributes the
-dialog to the bridge rather than to the calling terminal, then polls a temp result file
+`request` uses the same app hosting as every other permission-bound command, except its
+child comes to the foreground so the dialog is visible and grantable. The parent polls
 (default 180s, `--timeout`) and prints the child's JSON. Use `--in-process` only from a
 process that is itself a LaunchServices-launched app.
 
@@ -119,6 +142,9 @@ Common `error.code` values and what to do:
 | `undetermined_app_not_running` | target app is closed | `automation request --app <app>` |
 | `not_installed_as_app` | running the binary outside the bundle | reinstall via `build-install.sh` |
 | `request_timeout` | nobody answered the dialog | ask the user to answer it, then rerun |
+| `host_timeout` | the hosted app never answered | check for an open dialog or a busy Notes/Mail, rerun with a larger `--timeout` |
+| `host_launch_failed` | LaunchServices could not start the app | reinstall via `build-install.sh` |
+| `invalid_argument`, `argument_too_long`, `too_many_arguments` | argument rejected before relay | drop control characters; pass long bodies with `--body-file` |
 | `restricted` | MDM or parental controls block it | not resolvable locally |
 
 Error objects also carry `hint` and sometimes `recovery`, a list of commands to run.
