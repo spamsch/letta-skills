@@ -70,7 +70,7 @@ python3 scripts/claude_print.py analyze \
 ## Constraints
 
 - Unrestricted mode (the default) rejects only `/` and otherwise follows the explicit cwd and `--add-dir` list. Read-only mode additionally rejects the home directory itself, agent memory, and every descendant of agent memory.
-- Keep the default limits unless the task justifies changing them: 50 turns (max 50), no budget cap, 600 seconds, and 1 MiB combined output. There is no cost ceiling—an unrestricted run can spend freely until it finishes, hits 50 turns, or times out at 600 seconds.
+- Keep the default limits unless the task justifies changing them: 50 turns (max 50), no budget cap, 600 seconds, and 16 MiB combined output. `--max-output-bytes` can raise this to 64 MiB for exceptionally verbose runs. There is no cost ceiling—an unrestricted run can spend freely until it finishes, hits 50 turns, or times out at 600 seconds.
 - Never pass a user-controlled shell string. The wrapper has no session-resume flag. Unrestricted mode applies `--dangerously-skip-permissions`; pass `--mode read-only` when Claude must not run commands or edit files. `--confirm` is accepted but ignored (kept for backward compatibility).
 - Streaming is on by default: interim messages and tool markers go to stderr; the final answer stays in the stdout JSON result and is not echoed live. Byte and time caps still apply to the stream. Do not pass `--no-stream` unless the user explicitly asks for a silent, fully buffered run.
 - Do not pass secrets in the prompt. Authentication stays with Claude Code’s existing login.
