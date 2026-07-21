@@ -15,6 +15,7 @@ Point an agent at this repo (or a specific subfolder) using the `acquiring-skill
 | [browsing-with-stagehand](browsing-with-stagehand) | Runs bounded, disposable browser-agent tasks (search, navigate, extract) on real websites using Stagehand and a headless local Chrome profile. |
 | [managing-calendar](managing-calendar) | Reads and creates events in Calendar.app on macOS through EventKit and Swift scripts. |
 | [managing-email](managing-email) | Searches, reads, downloads attachments from, and safely manages headless email accounts over IMAP or Microsoft Graph. Creates reviewable drafts but never sends mail. |
+| [managing-letta-privacy-bridge](managing-letta-privacy-bridge) | Builds, installs, and drives the signed macOS helper app that owns the Calendar, Reminders, Apple Events, and Full Disk Access grants other skills depend on. |
 | [managing-mac-displays](managing-mac-displays) | Inspects, snapshots, parks, unparks, disconnects, and restores physical Mac display layouts with displayplacer while preserving a known recovery path. |
 | [managing-moneymoney](managing-moneymoney) | Reads account, category, and transaction data from MoneyMoney on macOS through its read-only AppleScript export API. |
 | [managing-notes](managing-notes) | Creates, reads, searches, and organizes notes in Notes.app on macOS through AppleScript. |
