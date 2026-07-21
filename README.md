@@ -8,17 +8,40 @@ Each skill is a top-level folder containing a `SKILL.md` (frontmatter + instruct
 
 Point an agent at this repo (or a specific subfolder) using the `acquiring-skills` skill, or copy a skill folder directly into the agent's `skills/` directory.
 
+## macOS privacy bridge
+
+Calendar, Reminders, Notes, and local Mail.app automation need a stable macOS
+permission identity. A shell script or `swift -e` request is attributed to its
+calling process, so a grant can disappear or apply to the wrong app. The
+[Letta Privacy Bridge](managing-letta-privacy-bridge) is a signed local `.app`
+that owns those TCC and Automation grants; the related skills call its CLI.
+
+Build and install it on the target Mac:
+
+```bash
+cd managing-letta-privacy-bridge/assets/privacy-bridge
+bash build-install.sh
+"$HOME/Applications/Letta Privacy Bridge.app/Contents/MacOS/letta-privacy-bridge" status
+"$HOME/Applications/Letta Privacy Bridge.app/Contents/MacOS/letta-privacy-bridge" request all
+```
+
+The final command presents the Calendar, Reminders, Notes, and Mail permission
+dialogs. **Full Disk Access is different:** macOS never permits an app to
+request or grant it. Add `Letta Privacy Bridge.app` manually in System Settings
+→ Privacy & Security → Full Disk Access. The bridge skill documents the full
+build, activation, recovery, and security model.
+
 ## Skills
 
 | Skill | Description |
 |---|---|
 | [browsing-with-stagehand](browsing-with-stagehand) | Runs bounded, disposable browser-agent tasks (search, navigate, extract) on real websites using Stagehand and a headless local Chrome profile. |
-| [managing-calendar](managing-calendar) | Reads and creates events in Calendar.app on macOS through EventKit and Swift scripts. |
+| [managing-calendar](managing-calendar) | Reads and creates events in Calendar.app through the Letta Privacy Bridge. |
 | [managing-email](managing-email) | Searches, reads, downloads attachments from, and safely manages headless email accounts over IMAP or Microsoft Graph. Creates reviewable drafts but never sends mail. |
 | [managing-letta-privacy-bridge](managing-letta-privacy-bridge) | Builds, installs, and drives the signed macOS helper app that owns the Calendar, Reminders, Apple Events, and Full Disk Access grants other skills depend on. |
 | [managing-mac-displays](managing-mac-displays) | Inspects, snapshots, parks, unparks, disconnects, and restores physical Mac display layouts with displayplacer while preserving a known recovery path. |
 | [managing-moneymoney](managing-moneymoney) | Reads account, category, and transaction data from MoneyMoney on macOS through its read-only AppleScript export API. |
-| [managing-notes](managing-notes) | Creates, reads, searches, and organizes notes in Notes.app on macOS through AppleScript. |
+| [managing-notes](managing-notes) | Creates, reads, searches, and organizes Notes.app notes through the Letta Privacy Bridge. |
 | [managing-paperless-ngx](managing-paperless-ngx) | Searches, reads, uploads, downloads, and safely updates documents and metadata in Paperless-ngx through its REST API. |
 | [managing-things3](managing-things3) | Reads and manages to-dos and projects in Things3 on macOS through AppleScript. |
 | [organizing-downloads](organizing-downloads) | Inspects and safely organizes loose files in Downloads (or another folder) into deterministic type-based subfolders. |
